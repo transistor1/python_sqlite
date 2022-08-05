@@ -1,0 +1,4 @@
+env
+*.sqlar
+*.txt
+*.pyc
