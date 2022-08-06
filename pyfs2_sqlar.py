@@ -1,23 +1,23 @@
+import io
 import logging
 import sys
+
 from collections import namedtuple
 
-import pysqlar
-from fs import ResourceType
-from fs.base import FS
-from fs.errors import ResourceNotFound
-from fs.info import Info
+import fs # ResourceType
+import fs.errors as fse # ResouceNotFound
+import fs.base as fsb # FS
+import fs.info as fsi # Info
 from pysqlar import SQLiteArchive
-
-from sqlar import find_files, SQLARInfo
+from sqlar import get_info, get_path_info, SQLARFileInfo
 
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 
-class SQLARFS(FS):
-    def __init__(self, filename):
+class SQLARFS(fsb.FS):
+    def __init__(self, filename=None):
         super().__init__()
         self.file = SQLiteArchive(filename)
     
@@ -26,26 +26,12 @@ class SQLARFS(FS):
 
     def getinfo(self, path, namespaces=None):
         namespaces = namespaces or ()
-        cursor = self.file._conn.cursor()
-        pathinfo = self.file.getinfo(path)
-        is_dir = False
-        resource_type = ResourceType.file
-        if not pathinfo:
-            cursor.execute('SELECT ? as name, '
-                           '0 as mode, '
-                           'max(s.mtime) as mtime, '
-                           'sum(s.sz) as sz '
-                           'FROM sqlar s '
-                           'WHERE name LIKE ?;', (path, f'{path}%',))
-            pathinfo = cursor.fetchall()
-            if len(pathinfo) > 0:
-                resource_type = ResourceType.directory
-                is_dir = True
-            else:
-                raise ResourceNotFound
-        pathinfo = list(pathinfo) + [is_dir]
-        logger.debug(f'*** PATHINFO: {str(pathinfo)}')
-        path_obj = SQLARPathInfo(*pathinfo)
+        path_obj = get_path_info(self.file, path)
+        if path_obj == None:
+            raise fse.ResourceNotFound
+        resource_type = [fs.ResourceType.file, fs.ResourceType.directory, fs.ResourceType.symlink] \
+                            [path_obj.is_sym << 1 | path_obj.is_dir]
+        logger.debug(f'PATHINFO: {str(path_obj)}')
         info = {"basic": {"name": path_obj.name, "is_dir": path_obj.is_dir}}
         if "details" in namespaces:
             info["details"] = {
@@ -56,7 +42,7 @@ class SQLARFS(FS):
                 "modified": path_obj.mtime,
                 "created": 0
             }
-        return Info(info)
+        return fsi.Info(info)
 
     def listdir(self, path):
         pass
