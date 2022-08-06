@@ -1,7 +1,8 @@
-#!python
+#!env/bin/python
 from asyncio.format_helpers import extract_stack
 from datetime import datetime
 import fnmatch
+import math
 import os
 import re
 import sqlite3
@@ -14,31 +15,55 @@ import pysqlar
 from traitlets import default
 
 
-SQLARInfo = namedtuple('SQLARInfo', 'name mode mtime sz is_dir is_sym')
-#class SQLARInfo():
+class SQLARFileInfo:
+    def __init__(self, name, mode, mtime, sz, is_dir, is_sym) -> None:
+        self.name = name
+        self.mode = mode
+        #self.mtime = mtime
+        self.mtime = datetime.fromtimestamp(mtime)
+        self.sz = sz
+        self.is_dir = is_dir
+        self.is_sym = is_sym
+        self.display_format = r'{_type:5} {name} {mode:5} {mtime:19} {sz:>20} '
 
-console_width = 80
+    @property
+    def wid(self):
+        try:
+            wid, _ = os.get_terminal_size()
+        except:
+            wid = 80
+        return wid
 
+    @property
+    def fn_size(self):
+        return self.wid - 5 - 5 - 19 - 20 - 5
 
-@click.command()
-@click.option('-l', 'command', flag_value='list')
-@click.option('-x', 'command', flag_value='extract')
-@click.option('-w', 'width', default=80)
-@click.argument('archive', required=True, type=click.Path(path_type=Path, exists=False))
-@click.argument('files', required=False, type=click.Path(path_type=Path), nargs=-1)
-def cli(command, width, archive, files):
-    global console_width
-    console_width = width
-    if command == None:
-        if len(files) == 0:
-            raise click.UsageError("No filenames provided.")
-    if command == None:
-        # Archive files
-        _make_archive(archive, files)
-    elif command == 'extract':
-        _extract_files(archive, files)
-    elif command == 'list':
-        _list(archive, files)
+    @property
+    def _name(self):
+        text = self.name
+        w = self.fn_size
+        fmt = '{{text:{w}}}'.format(w=w)
+        txt = fmt.format(text=text)
+        if len(txt) > w:
+            w -= 3 # for ellipses
+            mid = math.floor(len(txt) / 2)
+            remove_chrs = len(txt) - w
+            sub_left = math.floor(remove_chrs / 2)
+            sub_right = (remove_chrs - sub_left)
+            left = txt[0:mid-sub_left]
+            right = txt[mid+sub_right:]
+            txt = f'{left}...{right}'
+        return txt
+
+    @property
+    def f_type(self):
+        return ['FILE', 'DIR', 'SYM'][self.is_dir | self.is_sym << 1]
+
+    def __str__(self) -> str:
+        if not self.fn_size <= 0:
+            return self.display_format.format(_type=self.f_type,
+                name=self._name, mode=str(self.mode), mtime=str(self.mtime),
+                sz=str(self.sz))
 
 
 def write(arch, filename, arch_filename, is_dir=False):
@@ -71,8 +96,8 @@ def _make_archive(archive, files):
                     archive_filename = str(file)
                     if prefix:
                         archive_filename = npath[len(prefix.group(0)):]
-                    f_info = SQLARInfo(archive_filename, stat.st_mode, stat.st_mtime, stat.st_size, file.is_dir())
-                    _print_file(f_info)
+                    f_info = SQLARFileInfo(archive_filename, stat.st_mode, stat.st_mtime, stat.st_size, file.is_dir())
+                    print(str(f_info))
                     write(new_arch, str(file), archive_filename, file.is_dir())
         finally:
             new_arch.close()
@@ -100,9 +125,9 @@ def extract_symlink(archive, name):
 def _extract_files(archive, files):
     with pysqlar.SQLiteArchive(archive, mode='ro') as arch:
         try:
-            file: SQLARInfo
-            for file in find_files(arch, files):
-                _print_file(file)
+            file: SQLARFileInfo
+            for file in get_info(arch, files):
+                print(str(file))
                 if file.is_dir:
                     # Directory
                     extract_dir(file.name)
@@ -117,34 +142,13 @@ def _extract_files(archive, files):
             arch.close()
 
 
-def _sz(text, w):
-    fmt = '{{text:{w}}}'.format(w=w)
-    txt = fmt.format(text=text)
-    if len(txt) > w:
-        mid = int(w / 2)
-        txt = txt[0:mid-1] + '...' + txt[-mid+2:]
-    return txt
-    
-
-def _print_file(file):
-    # try:
-    #     wid, _ = os.get_terminal_size()
-    # except OSError:
-    #     wid = 80
-    wid = console_width
-    fn_size = wid - 5 - 15 - 20 - 5 - 5
-    if not fn_size <= 0:
-        f_type = ['FILE', 'DIR', 'SYM'][file.is_dir | file.is_sym << 1]
-        print(f'{f_type:5}{_sz(file.name, fn_size)}{file.mode:5}{file.mtime:15}{file.sz:20}')
-
-
 def _list(archive, patterns=[]):
     with pysqlar.SQLiteArchive(archive, mode='ro') as arch:
-        for file in find_files(arch, patterns):
-            _print_file(file)
+        for file in get_info(arch, patterns):
+            print(str(file))
             
 
-def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file):
+def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
     """
     Create a SQLARInfo object from file details
     :param archive: A SQLiteArchive object (from pysqlar)
@@ -157,11 +161,11 @@ def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file):
         data = get_data(archive, file[0])
         if data == None:
             is_dir = True
-    sqlarinfo = SQLARInfo(*file, is_dir, is_sym)
+    sqlarinfo = SQLARFileInfo(*file, is_dir, is_sym)
     return sqlarinfo
 
 
-def find_files(archive, patterns):
+def get_info(archive, patterns):
     if len(patterns) == 0:
         patterns = ['*']
     for file in archive.infolist():
@@ -171,5 +175,37 @@ def find_files(archive, patterns):
                 yield get_sqlarinfo(archive, *file)
 
 
+def get_path_info(archive, path):
+    if len(path) == 0:
+        return None
+    elif path == '/':
+        return SQLARFileInfo('', 0o777, int(datetime.utcnow().timestamp()), 
+            0, True, False)
+    else:
+        file = archive.getinfo(path)
+        return get_sqlarinfo(archive, *file)
+
+
+@click.command()
+@click.option('-l', 'command', flag_value='list')
+@click.option('-x', 'command', flag_value='extract')
+@click.option('-w', 'width', default=80)
+@click.argument('archive', required=True, type=click.Path(path_type=Path, exists=False))
+@click.argument('files', required=False, type=click.Path(path_type=Path), nargs=-1)
+def cli(command, width, archive, files):
+    global console_width
+    console_width = width
+    if command == None:
+        if len(files) == 0:
+            raise click.UsageError("No filenames provided.")
+    if command == None:
+        # Archive files
+        _make_archive(archive, files)
+    elif command == 'extract':
+        _extract_files(archive, files)
+    elif command == 'list':
+        _list(archive, files)
+
+        
 if __name__ == '__main__':
     cli()
