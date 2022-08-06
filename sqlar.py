@@ -108,16 +108,11 @@ def extract_dir(name):
     path.mkdir(parents=True, exist_ok=True)
 
 
-def get_data(archive, name):
-    return archive.sql("SELECT data FROM sqlar WHERE name=?", name)[0][0]
-
-
-def extract_symlink(archive, name):
+def _extract_symlink(archive, name):
     # Symbolic link
     file = Path(name)
     extract_dir(str(file.parent))
-    sympath = get_data(archive, name)
-    #print(name, type(name), sympath, type(sympath))
+    sympath = archive.read(name).decode()
     file.unlink(missing_ok=True)
     file.symlink_to(sympath)
 
@@ -132,7 +127,7 @@ def _extract_files(archive, files):
                     # Directory
                     extract_dir(file.name)
                 elif file.sz == -1:
-                    extract_symlink(arch, file.name)
+                    _extract_symlink(arch, file.name)
                 elif file.sz == 0:
                     # Empty file
                     Path(file.name).touch()
@@ -162,9 +157,7 @@ def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
         is_sym = True
     elif file[3] == 0:
         # Check if it's a directory
-        archive.sql("SELECT data FROM sqlar WHERE name=? AND data IS NULL", file[0])
-        if data == None:
-            is_dir = True
+        is_dir = path_is_dir(archive, file[0])
     sqlarinfo = SQLARFileInfo(*file, is_dir, is_sym)
     return sqlarinfo
 
