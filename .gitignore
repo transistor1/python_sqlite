@@ -2,3 +2,4 @@ env
 *.sqlar
 *.txt
 *.pyc
+.vscode
