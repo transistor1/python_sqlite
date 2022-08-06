@@ -126,7 +126,7 @@ def _extract_files(archive, files):
     with pysqlar.SQLiteArchive(archive, mode='ro') as arch:
         try:
             file: SQLARFileInfo
-            for file in get_info(arch, files):
+            for file in find_files(arch, files):
                 print(str(file))
                 if file.is_dir:
                     # Directory
@@ -144,9 +144,12 @@ def _extract_files(archive, files):
 
 def _list(archive, patterns=[]):
     with pysqlar.SQLiteArchive(archive, mode='ro') as arch:
-        for file in get_info(arch, patterns):
+        for file in find_files(arch, patterns):
             print(str(file))
             
+def path_is_dir(archive, path):
+    data = archive.sql("SELECT data FROM sqlar WHERE name=? AND data IS NULL", path)
+    return len(data) > 0
 
 def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
     """
@@ -158,14 +161,15 @@ def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
     if file[3] == -1:
         is_sym = True
     elif file[3] == 0:
-        data = get_data(archive, file[0])
+        # Check if it's a directory
+        archive.sql("SELECT data FROM sqlar WHERE name=? AND data IS NULL", file[0])
         if data == None:
             is_dir = True
     sqlarinfo = SQLARFileInfo(*file, is_dir, is_sym)
     return sqlarinfo
 
 
-def get_info(archive, patterns):
+def find_files(archive, patterns):
     if len(patterns) == 0:
         patterns = ['*']
     for file in archive.infolist():
@@ -206,6 +210,6 @@ def cli(command, width, archive, files):
     elif command == 'list':
         _list(archive, files)
 
-        
+
 if __name__ == '__main__':
     cli()

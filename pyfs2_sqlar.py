@@ -9,7 +9,7 @@ import fs.errors as fse # ResouceNotFound
 import fs.base as fsb # FS
 import fs.info as fsi # Info
 from pysqlar import SQLiteArchive
-from sqlar import get_info, get_path_info, SQLARFileInfo
+from sqlar import get_path_info, SQLARFileInfo
 
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
