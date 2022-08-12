@@ -121,7 +121,6 @@ class SQLARFileWriter(io.RawIOBase):
     def readinto(self, _buffer):
         if self._pos >= self._fileinfo.sz:
             return 0
-            raise io.BlockingIOError
         file_data = self.file.read(self.path)
         if file_data == None:
             raise fse.ResourceNotFound(self.path)
