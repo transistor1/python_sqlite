@@ -11,6 +11,7 @@ from glob import glob
 from pathlib import Path
 
 import click
+import fs.errors as fse
 import pysqlar
 from traitlets import default
 
@@ -180,6 +181,8 @@ def get_path_info(archive, path):
             0, True, False)
     else:
         file = archive.getinfo(path)
+        if file == None:
+            return None
         return get_sqlarinfo(archive, *file)
 
 
