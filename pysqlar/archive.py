@@ -455,8 +455,7 @@ class SQLiteArchive():
                  unix_mode=0o777,
                  mtime=int(datetime.utcnow().timestamp()),
                  compression=None,
-                 compress_level=None,
-                 overwrite=False):
+                 compress_level=None):
         """Write the string into the archive with name *arcname*.
 
         If *data* is a *str* it is first encoded as utf-8 before writing.
@@ -483,26 +482,26 @@ class SQLiteArchive():
             compressed_data = data
 
         with self._conn as c:
-            c.execute(
+            cursor = c.cursor()
+            cursor.execute(
                 """
                 INSERT INTO sqlar(name, mode, mtime, sz, data)
                 VALUES (:name, :mode, :mtime, :sz, :data)
-                """ +
-                """
+
                 ON CONFLICT(name) DO UPDATE
                     SET name = :name,
                     mode = :mode,
                     mtime = :mtime,
                     sz = :sz,
                     data = :data
-                """ if overwrite else "",
-                (
-                    str(Path(arcname).as_posix()),
-                    unix_mode,
-                    mtime,
-                    len(data),
-                    compressed_data
-                )
+                """,
+                {
+                    'name': str(Path(arcname).as_posix()),
+                    'mode': unix_mode,
+                    'mtime': mtime,
+                    'sz': len(data),
+                    'data': compressed_data
+                }
             )
             pass
 
