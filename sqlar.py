@@ -67,11 +67,13 @@ class SQLARFileInfo:
                 sz=str(self.sz))
 
 
-def write(arch, filename, arch_filename, is_dir=False):
+def write(arch, filename, arch_filename, is_dir=False, data=None):
     def _try_write():
         if is_dir:
             arch.sql(f"INSERT INTO sqlar (name, mode, mtime, sz) VALUES (?, ?, ?, ?)", 
                 arch_filename, 0o777, int(datetime.utcnow().timestamp()), 0)
+        elif data != None:
+            arch.writestr(arch_filename, data)
         else:
             arch.write(filename, arch_filename)
     try:
@@ -180,6 +182,8 @@ def get_path_info(archive, path):
         return SQLARFileInfo('', 0o777, int(datetime.utcnow().timestamp()), 
             0, True, False)
     else:
+        if path.startswith('/'):
+            path = path[1:]
         file = archive.getinfo(path)
         if file == None:
             return None

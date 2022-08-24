@@ -6,6 +6,7 @@ import sys
 
 from collections import namedtuple
 from contextlib import contextmanager
+from pathlib import Path
 import traceback
 
 import fs # ResourceType
@@ -18,6 +19,15 @@ from pysqlar import SQLiteArchive
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
 logger = logging.getLogger(__name__)
+
+
+def getsplit(text, max, start=0):
+    spl = text.find('\n', start)
+    if spl == -1:
+        r = text[start:][:max]
+        return len(r), start + len(r), r
+    r = text[start:spl][:max]
+    return len(r), start + len(r), r
 
 
 class SQLARFS(fsb.FS):
@@ -84,6 +94,14 @@ class SQLARFS(fsb.FS):
                 raise fse.ResourceNotFound(path)
             file_obj = SQLARFileWriter(self.file, path, 'rb')
         elif _mode == 'w':
+            # Check to see if parent directories exist:
+            full_path = Path(path)
+            while str(full_path.parent) != '.':
+                parent = full_path.parent
+                path_info = sqlar.get_path_info(self.file, str(parent))
+                if path_info == None or not path_info.is_dir:
+                    raise fse.ResourceNotFound(path)
+                full_path = parent
             file_obj = SQLARFileWriter(self.file, path, 'wb')
         elif _mode == 'x':
             if path_info:
@@ -101,43 +119,38 @@ class SQLARFS(fsb.FS):
         pass    
 
 
-class SQLARFileWriter(io.RawIOBase):
+class SQLARFileWriter(io.BytesIO):
     def __init__(self, filename, path, mode='wb'):
         super().__init__()
-        if len(mode) == 1:
-            mode += 'b'
         self.mode = mode
+        if len(self.mode) == 1: self.mode += 'b'
+        self._mode = mode[0]
+        self._type = 'b'
         if isinstance(filename, SQLiteArchive):
             self.file = filename
         else:
             self.file = SQLiteArchive(filename, mode='rwc')
         self.path = path
-        self._pos = 0
         self._fileinfo = sqlar.get_path_info(self.file, path)
-    
-    def fileno(self) -> int:
-        raise io.UnsupportedOperation
+        if mode[0] == 'r':
+            self.write(self.file.read(self.path))
+            self.seek(0)
+
+    def write(self, _buffer):
+        sqlar.write(self.file, '', self.path, data=_buffer)
+        return len(_buffer)
+
+    def read(self, _size = None):
+        return self.file.read(self.path)[:_size]
+
+    def writelines(self, _lines):
+        return super().writelines(_lines)
 
     def readinto(self, _buffer):
-        if self._pos >= self._fileinfo.sz:
-            return 0
-        file_data = self.file.read(self.path)
-        if file_data == None:
-            raise fse.ResourceNotFound(self.path)
-        _buffer[0:len(file_data)] = file_data
-        self._pos = len(file_data)
-        return self._pos
+        return super().readinto(_buffer)
+
+    def readable(self) -> bool:
+        return self._mode == 'r'
 
     def writable(self) -> bool:
-        return self.mode[0] in ['w','x']
-            
-    def readable(self) -> bool:
-        return self.mode[0] == 'r'
-    
-    def write(self, bytes_):
-        self.file.writestr(self.path, bytes_, overwrite=True)
-        return len(bytes_)
-
-    def close(self) -> None:
-        super().close()
-        pass
+        return self._mode in ['w', 'x']
