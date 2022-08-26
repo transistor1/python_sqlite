@@ -68,7 +68,7 @@ class SQLARFileInfo:
 
 
 def write(arch, filename, arch_filename, is_dir=False, data=None):
-    def _try_write():
+    def _try_write(arch, filename, arch_filename, is_dir=False, data=None):
         if is_dir:
             arch.sql(f"INSERT INTO sqlar (name, mode, mtime, sz) VALUES (?, ?, ?, ?)", 
                 arch_filename, 0o777, int(datetime.utcnow().timestamp()), 0)
@@ -77,7 +77,7 @@ def write(arch, filename, arch_filename, is_dir=False, data=None):
         else:
             arch.write(filename, arch_filename)
     try:
-        _try_write()
+        _try_write(arch, filename, arch_filename, is_dir, data)
     except sqlite3.IntegrityError:
         delete_file(arch, arch_filename)
         _try_write()
