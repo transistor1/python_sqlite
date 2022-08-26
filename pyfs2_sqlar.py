@@ -135,13 +135,16 @@ class SQLARFileWriter(io.BytesIO):
         if mode[0] == 'r':
             self.write(self.file.read(self.path))
             self.seek(0)
+        self._pos = None
 
     def write(self, _buffer):
         sqlar.write(self.file, '', self.path, data=_buffer)
         return len(_buffer)
 
     def read(self, _size = None):
-        return self.file.read(self.path)[:_size]
+        data = self.file.read(self.path)[self._pos:_size]
+        self._pos = (self._pos or 0) + len(data)
+        return data
 
     # def writelines(self, _lines):
     #     return super().writelines(_lines)
