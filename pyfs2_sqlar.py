@@ -143,11 +143,11 @@ class SQLARFileWriter(io.BytesIO):
     def read(self, _size = None):
         return self.file.read(self.path)[:_size]
 
-    def writelines(self, _lines):
-        return super().writelines(_lines)
+    # def writelines(self, _lines):
+    #     return super().writelines(_lines)
 
-    def readinto(self, _buffer):
-        return super().readinto(_buffer)
+    # def readinto(self, _buffer):
+    #     return super().readinto(_buffer)
 
     def readable(self) -> bool:
         return self._mode == 'r'
