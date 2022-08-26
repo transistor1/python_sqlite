@@ -127,22 +127,22 @@ class SQLARFileWriter(io.BytesIO):
         self._mode = mode[0]
         self._type = 'b'
         if isinstance(filename, SQLiteArchive):
-            self.file = filename
+            self.sqlite_archive = filename
         else:
-            self.file = SQLiteArchive(filename, mode='rwc')
+            self.sqlite_archive = SQLiteArchive(filename, mode='rwc')
         self.path = path
-        self._fileinfo = sqlar.get_path_info(self.file, path)
+        self._fileinfo = sqlar.get_path_info(self.sqlite_archive, path)
         if mode[0] == 'r':
-            self.write(self.file.read(self.path))
+            self.write(self.sqlite_archive.read(self.path))
             self.seek(0)
         self._pos = None
 
     def write(self, _buffer):
-        sqlar.write(self.file, '', self.path, data=_buffer)
+        sqlar.write(self.sqlite_archive, '', self.path, data=_buffer)
         return len(_buffer)
 
     def read(self, _size = None):
-        data = self.file.read(self.path)[self._pos:_size]
+        data = self.sqlite_archive.read(self.path)[self._pos:_size]
         self._pos = (self._pos or 0) + len(data)
         return data
 
