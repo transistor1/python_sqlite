@@ -120,29 +120,29 @@ class SQLARFS(fsb.FS):
 
 
 class SQLARFileWriter(io.BytesIO):
-    def __init__(self, filename, path, mode='wb'):
+    def __init__(self, archive_filename, internal_filename_path, mode='wb'):
         super().__init__()
         self.mode = mode
         if len(self.mode) == 1: self.mode += 'b'
         self._mode = mode[0]
         self._type = 'b'
-        if isinstance(filename, SQLiteArchive):
-            self.sqlite_archive = filename
+        if isinstance(archive_filename, SQLiteArchive):
+            self.sqlite_archive = archive_filename
         else:
-            self.sqlite_archive = SQLiteArchive(filename, mode='rwc')
-        self.path = path
-        self._fileinfo = sqlar.get_path_info(self.sqlite_archive, path)
+            self.sqlite_archive = SQLiteArchive(archive_filename, mode='rwc')
+        self.internal_filename_path = internal_filename_path
+        self._fileinfo = sqlar.get_path_info(self.sqlite_archive, internal_filename_path)
         if mode[0] == 'r':
-            self.write(self.sqlite_archive.read(self.path))
+            self.write(self.sqlite_archive.read(self.internal_filename_path))
             self.seek(0)
         self._pos = None
 
     def write(self, _buffer):
-        sqlar.write(self.sqlite_archive, '', self.path, data=_buffer)
+        sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=_buffer)
         return len(_buffer)
 
     def read(self, _size = None):
-        data = self.sqlite_archive.read(self.path)[self._pos:_size]
+        data = self.sqlite_archive.read(self.internal_filename_path)[self._pos:_size]
         self._pos = (self._pos or 0) + len(data)
         return data
 
