@@ -345,7 +345,7 @@ class SQLiteArchive():
             for row in cur:
                 _decompress_row(path, row)
 
-    def read(self, name):
+    def read(self, name, start=1, end=2147483647):
         """Returns a decompressed bytes-object from the archive.
 
         Args:
@@ -357,13 +357,13 @@ class SQLiteArchive():
         with self._conn as c:
             row = c.execute(
                 """
-                SELECT * FROM sqlar WHERE name = ?;
+                SELECT sz, data FROM sqlar WHERE name = ?;
                 """,
                 (name,)
             ).fetchone()
         if row:
-            _, _, _, size, data = row
-            return decompress_data(data, size)
+            size, data = row
+            return decompress_data(data, size)[start-1:end]
 
     def sql(self, query, *args):
         """Execute raw SQL statements against the database.
@@ -455,7 +455,8 @@ class SQLiteArchive():
                  unix_mode=0o777,
                  mtime=int(datetime.utcnow().timestamp()),
                  compression=None,
-                 compress_level=None):
+                 compress_level=None,
+                 mode='wb'):
         """Write the string into the archive with name *arcname*.
 
         If *data* is a *str* it is first encoded as utf-8 before writing.
@@ -481,10 +482,13 @@ class SQLiteArchive():
         else:
             compressed_data = data
 
+        append_sql = f"""sz = {'sz + ' if mode == 'ab' else ''} :sz,
+                         data = {'cast(data || :data as blob)' if mode == 'ab'
+                            else ':data'}"""
+
         with self._conn as c:
             cursor = c.cursor()
-            cursor.execute(
-                """
+            sql = f"""
                 INSERT INTO sqlar(name, mode, mtime, sz, data)
                 VALUES (:name, :mode, :mtime, :sz, :data)
 
@@ -492,9 +496,10 @@ class SQLiteArchive():
                     SET name = :name,
                     mode = :mode,
                     mtime = :mtime,
-                    sz = :sz,
-                    data = :data
-                """,
+                    {append_sql}
+                """
+            cursor.execute(
+                sql,
                 {
                     'name': str(Path(arcname).as_posix()),
                     'mode': unix_mode,
@@ -503,6 +508,7 @@ class SQLiteArchive():
                     'data': compressed_data
                 }
             )
+            c.commit()
             pass
 
     def __enter__(self):

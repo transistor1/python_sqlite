@@ -20,8 +20,8 @@ class SQLARFileInfo:
     def __init__(self, name, mode, mtime, sz, is_dir, is_sym) -> None:
         self.name = name
         self.mode = mode
-        #self.mtime = mtime
-        self.mtime = datetime.fromtimestamp(mtime)
+        self.mtime = mtime
+        #self.mtime = datetime.fromtimestamp(mtime)
         self.sz = sz
         self.is_dir = is_dir
         self.is_sym = is_sym
@@ -67,20 +67,20 @@ class SQLARFileInfo:
                 sz=str(self.sz))
 
 
-def write(arch, filename, arch_filename, is_dir=False, data=None):
-    def _try_write(arch, filename, arch_filename, is_dir=False, data=None):
+def write(arch, filename, arch_filename, is_dir=False, data=None, mode='wb'):
+    def _try_write(arch, filename, arch_filename, is_dir=False, data=None, mode=mode):
         if is_dir:
             arch.sql(f"INSERT INTO sqlar (name, mode, mtime, sz) VALUES (?, ?, ?, ?)", 
                 arch_filename, 0o777, int(datetime.utcnow().timestamp()), 0)
         elif data != None:
-            arch.writestr(arch_filename, data)
+            arch.writestr(arch_filename, data, mode=mode)
         else:
             arch.write(filename, arch_filename)
     try:
-        _try_write(arch, filename, arch_filename, is_dir, data)
+        _try_write(arch, filename, arch_filename, is_dir, data, mode)
     except sqlite3.IntegrityError:
         delete_file(arch, arch_filename)
-        _try_write()
+        _try_write(arch, filename, arch_filename, is_dir, data, mode)
 
 
 def delete_file(archive, file):
@@ -165,12 +165,16 @@ def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
     return sqlarinfo
 
 
-def find_files(archive, patterns):
+def find_files(archive, patterns, from_root=False):
+    if type(patterns) is tuple:
+        patterns = list(patterns)
+    if type(patterns) is not list:
+        patterns = [patterns]
     if len(patterns) == 0:
         patterns = ['*']
     for file in archive.infolist():
         for pattern in patterns:
-            reobj = re.compile(fnmatch.translate(str(pattern)))
+            reobj = re.compile(('^' if from_root else '') + fnmatch.translate(str(pattern)))
             if reobj.match(file[0]):
                 yield get_sqlarinfo(archive, *file)
 
@@ -182,8 +186,8 @@ def get_path_info(archive, path):
         return SQLARFileInfo('', 0o777, int(datetime.utcnow().timestamp()), 
             0, True, False)
     else:
-        if path.startswith('/'):
-            path = path[1:]
+        # if path.startswith('/'):
+        #     path = path[1:]
         file = archive.getinfo(path)
         if file == None:
             return None
