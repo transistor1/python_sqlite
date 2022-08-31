@@ -13,6 +13,7 @@ import fs # ResourceType
 import fs.errors as fse # ResouceNotFound
 import fs.base as fsb # FS
 import fs.info as fsi # Info
+import fs.mode as fsm
 import fs.path as fsp
 import fs.subfs as sfs
 import sqlar
@@ -74,8 +75,9 @@ class SQLARFS(fsb.FS):
             full_path = parent
 
     def close(self):
-        self.file.close()
-        self._closed = True
+        if not self._closed:
+            self.file.close()
+            self._closed = True
 
     def isclosed(self):
         return self._closed
@@ -160,7 +162,6 @@ class SQLARFS(fsb.FS):
         for file in files:
             yield self.getinfo(file.name)
 
-
     def listdir(self, path):
         path = self._tr_path(path)
         # Make sure path exists; getinfo will
@@ -208,7 +209,7 @@ class SQLARFS(fsb.FS):
         if _mode[0] == 'r':
             if path_info == None:
                 raise fse.ResourceNotFound(path)
-            file_obj = SQLARFileWriter(self.file, path, 'rb')
+            file_obj = SQLARFileWriter(self.file, path, mode)
         elif _mode[0] in ['a', 'w']:
             # Check to see if parent directories exist:
             self._validate_intermediate_paths(path)
@@ -249,24 +250,40 @@ class SQLARFS(fsb.FS):
 class SQLARFileWriter(io.RawIOBase):
     def __init__(self, archive_filename, internal_filename_path, mode='wb'):
         super().__init__()
-        self._pos = 0
-        self._buffer = None
+        self._buffer = io.BytesIO()
+        self._flush_pos = 0
         if len(mode) <= 2 and mode[-1] != 'b':
             mode += 'b'
         self.mode = mode
+        self._closed = False
+        self._readable = any([x in mode for x in ['r']])
+        self._writable = any([x in mode for x in ['w','+','x','a']])
+        self._appendable = any([x in mode for x in ['a']])
+        self._create = any([x in mode for x in ['w','a','x']])
+        self._touch = lambda: self._write(b'')
+        self.sqlite_archive = None
         if isinstance(archive_filename, SQLiteArchive):
             self.sqlite_archive = archive_filename
         else:
             self.sqlite_archive = SQLiteArchive(archive_filename, mode='rwc')
         self.internal_filename_path = internal_filename_path
-        self._fileinfo = sqlar.get_path_info(self.sqlite_archive, internal_filename_path)
-        if self._mode[0] == 'r':
-            self._write(self.sqlite_archive.read(self.internal_filename_path))
-            self.seek(0)
-        if self._mode == 'w':
+        self._init_buffer()
+        #self._fileinfo = sqlar.get_path_info(self.sqlite_archive, internal_filename_path)
+        if self._create:
             # "touch" the file
-            self._write(b'')
-        
+            self._touch()
+
+    def _init_buffer(self):
+        # So we only have 1 trip to the database
+        data = self.sqlite_archive.read(self.internal_filename_path)
+        if data != None:
+            self._buffer.write(data)
+            if not self._appendable:
+                self._buffer.seek(0)
+        if self._appendable:
+            self._buffer.seek(0, io.SEEK_END)
+            self._flush_pos = self.tell()
+
     @property
     def _mode(self):
         return self.mode[:-1]
@@ -279,97 +296,77 @@ class SQLARFileWriter(io.RawIOBase):
         return True
 
     def tell(self):
-        return self._pos
+        return self._buffer.tell()
 
     def seek(self, _offset, _whence=0):
-        if _whence == 0:
-            self._pos = _offset
-        elif _whence == 1:
-            # From current pos
-            self._pos += _offset
-        elif _whence == 2:
-            # From EOF, offset should be negative:
-            data = self.read()
-            self._pos = len(data) + _offset
+        self._buffer.seek(_offset, _whence)
 
     def truncate(self, _size):
-        #return super().truncate(_size)
-        new_data = self.read(_size)
-        self.seek(0)
-        self._write(new_data)
+        if not self.writable():
+            raise OSError()
+        return self._buffer.truncate(_size)
 
     def write(self, _buffer):
-        if 'r' in self.mode and '+' not in self.mode:
+        if not self.writable():
             raise OSError()
         return self._write(_buffer)
 
     def _write(self, _buffer):
-        if self._pos == 0:
-            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=_buffer, mode=self.mode)
-        else:
-            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=_buffer, mode='ab')
-        self._pos += len(_buffer)
-        return len(_buffer)
+        return self._buffer.write(_buffer)
+
+    def close(self):
+        if not self._closed:
+            if self._writable:
+                self.flush()
+            self._closed = True
+    
+    def closed(self):
+        return self._closed
+
+    def __enter__(self):
+        #return super().__enter__()
+        self._closed = False
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        #return super().__exit__(exc_type, exc_val, exc_tb)
+        self.close()
+
+    def flush(self):
+        if self._writable:
+            data = self._buffer.getbuffer()[self._flush_pos:].tobytes()
+            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=data, mode=self.mode)
+            self._flush_pos = self.tell()
 
     def writelines(self, _lines):
-        for line in _lines:
-            self._write(line)
+        if not self.writable():
+            raise OSError()
+        self._buffer.writelines(_lines)
 
     def readline(self, _size = None):
-        _bytes_read = b''
-        _size = _size or -1
-        while True:
-            ch = self.read(1)
-            _bytes_read += ch
-            if ch == b'\n':
-                _size -= 1
-            if ch == b'\n' or ch == b'' or (_size or -1) == 0:
-                break
-        return _bytes_read
-
-    def _iter_readline(self):
-        while True:
-            data = self.readline()
-            if data == b'':
-                break
-            yield data
+       return self._buffer.readline(_size)
 
     def __iter__(self):
-        yield from self._iter_readline()
+        yield from self._buffer.__iter__()
 
     def readlines(self, _hint=-1):
-        # hint values of 0 or less, as well as None, are treated as no hint.
-        _hint = _hint or -1
-        _tot_len = 0
-        lines = []
-        while True:
-            line = self.readline(1)
-            _tot_len += len(line)
-            if line == b'':
-                break
-            lines.append(line)
-            if _hint > 0 and _tot_len > _hint:
-                break
-        return lines
+        if not self.readable():
+            raise OSError()
+        return self._buffer.readlines(_hint)
 
     def read(self, _size = None):
-        if 'w' in self.mode and '+' not in self.mode:
+        if not self.readable():
             raise OSError()
-        if self._pos == 0:
-            # So we only have 1 trip to the database
-            data = self.sqlite_archive.read(self.internal_filename_path)
-            self._buffer = io.BytesIO()
-            self._buffer.write(data)
-            self._buffer.seek(0)
         data = self._buffer.read(_size)
-        self._pos = (self._pos or 0) + len(data)
         return data
 
     def readinto(self, _buffer: bytearray):
-        _buffer.extend(self.read())
+        if not self.readable():
+            raise OSError()
+        self._buffer.readinto(_buffer)
 
     def readable(self) -> bool:
-        return self._mode == 'r'
+        return self._readable
 
     def writable(self) -> bool:
-        return self._mode in ['a', 'w', 'x']
+        return self._writable
