@@ -69,8 +69,8 @@ class SQLARFS(fsb.FS):
         full_path = self._tr_path(path)
         while fsp.dirname(full_path) != '/':
             parent = fsp.dirname(full_path)
-            path_info = sqlar.get_path_info(self.file, str(parent))
-            if path_info == None or not path_info.is_dir:
+            path_info = self._get_sqlar_path_info(path)
+            if not path_info.is_dir:
                 raise fse.ResourceNotFound(path)
             full_path = parent
 
@@ -94,12 +94,22 @@ class SQLARFS(fsb.FS):
                 'rename': False}
         return meta
 
-    def getinfo(self, path, namespaces=None):
-        path = self._tr_path(path)
-        namespaces = namespaces or ()
+    def _get_sqlar_path_info(self, path):
+        """Get a SQLARFileInfo object
+
+        :param path: Path of the file or directory
+
+        :raises ResourceNotFound: if file or directory doesn't exist
+        """
         path_obj = sqlar.get_path_info(self.file, path)
         if path_obj == None:
             raise fse.ResourceNotFound(path)
+        return path_obj
+
+    def getinfo(self, path, namespaces=None):
+        path = self._tr_path(path)
+        namespaces = namespaces or ()
+        path_obj = self._get_sqlar_path_info(path) # Raises ResourceNotFound if non-existent
         resource_type = [fs.ResourceType.file, fs.ResourceType.directory, fs.ResourceType.symlink] \
                             [path_obj.is_sym << 1 | path_obj.is_dir]
         logger.debug(f'PATHINFO: {str(path_obj)}')
@@ -138,10 +148,6 @@ class SQLARFS(fsb.FS):
             # For paging
             page = []
             try:
-                # for idx in range(0, start or len(files)):
-                #     next(files)
-                # for idx in range(start, end or len(files)):
-                #     page.append(next(files))
                 try:
                     while True:
                         if (start or 0) > 0:
@@ -191,41 +197,27 @@ class SQLARFS(fsb.FS):
             raise fse.FilesystemClosed(path)
         if self._check_invalid(path):
             raise fse.InvalidCharsInPath(path)
+        mode_obj = fsm.Mode(mode)
+        mode_obj.validate()
         path = self._tr_path(path)
-        if len(mode) > 3 or 't' in mode:
-            raise ValueError()
-        if mode[-1] != 'b':
-            mode += 'b'
-        _mode = mode[:-1]
-        _type = mode[-1]
-        if _type != 'b':
-            raise ValueError()
-        if _mode[0] not in ['a', 'r', 'w', 'x'] or _type != 'b':
-            raise ValueError()
-        path_info = sqlar.get_path_info(self.file, path)
-        if path_info and path_info.is_dir:
-            raise fse.FileExpected(path)
-        file_obj = None
-        if _mode[0] == 'r':
-            if path_info == None:
-                raise fse.ResourceNotFound(path)
-            file_obj = SQLARFileWriter(self.file, path, mode)
-        elif _mode[0] in ['a', 'w']:
+        try:
+            path_info = self._get_sqlar_path_info(path)
+            if mode_obj.exclusive:
+                raise fse.FileExists(path)
+            if path_info.is_dir:
+                raise fse.FileExpected(path)
             # Check to see if parent directories exist:
             self._validate_intermediate_paths(path)
-            file_obj = SQLARFileWriter(self.file, path, mode)
-        elif _mode == 'x':
-            if path_info:
-                raise fse.FileExists(path)
-            file_obj = SQLARFileWriter(self.file, path, mode)
+        except fse.ResourceNotFound:
+            if mode_obj.reading:
+                raise
+        file_obj = SQLARFileWriter(self.file, path, mode)
         return file_obj
 
     def remove(self, path):
         path = self._tr_path(path)
         info = self.getinfo(path)
-        if info == None:
-            raise fse.ResourceNotFound(path)
-        elif info.is_dir:
+        if info.is_dir:
             raise fse.FileExpected(path)
         sqlar.delete_file(self.file, path)
 
@@ -234,9 +226,7 @@ class SQLARFS(fsb.FS):
         if path == '/':
             raise fse.RemoveRootError(path)
         info = self.getinfo(path)
-        if info == None:
-            raise fse.ResourceNotFound(path)
-        elif not info.is_dir:
+        if not info.is_dir:
             raise fse.DirectoryExpected(path)
         files = self.listdir(path)
         if len(files) > 0:
@@ -252,15 +242,9 @@ class SQLARFileWriter(io.RawIOBase):
         super().__init__()
         self._buffer = io.BytesIO()
         self._flush_pos = 0
-        if len(mode) <= 2 and mode[-1] != 'b':
-            mode += 'b'
-        self.mode = mode
+        self.mode = fsm.Mode(mode)
         self._closed = False
-        self._readable = any([x in mode for x in ['r']])
-        self._writable = any([x in mode for x in ['w','+','x','a']])
-        self._appendable = any([x in mode for x in ['a']])
-        self._create = any([x in mode for x in ['w','a','x']])
-        self._touch = lambda: self._write(b'')
+        self._touch = lambda: self._write_buf(b'')
         self.sqlite_archive = None
         if isinstance(archive_filename, SQLiteArchive):
             self.sqlite_archive = archive_filename
@@ -268,8 +252,7 @@ class SQLARFileWriter(io.RawIOBase):
             self.sqlite_archive = SQLiteArchive(archive_filename, mode='rwc')
         self.internal_filename_path = internal_filename_path
         self._init_buffer()
-        #self._fileinfo = sqlar.get_path_info(self.sqlite_archive, internal_filename_path)
-        if self._create:
+        if self.mode.create:
             # "touch" the file
             self._touch()
 
@@ -278,45 +261,42 @@ class SQLARFileWriter(io.RawIOBase):
         data = self.sqlite_archive.read(self.internal_filename_path)
         if data != None:
             self._buffer.write(data)
-            if not self._appendable:
+            if not self.mode.appending:
                 self._buffer.seek(0)
-        if self._appendable:
+        if self.mode.appending:
             self._buffer.seek(0, io.SEEK_END)
             self._flush_pos = self.tell()
-
-    @property
-    def _mode(self):
-        return self.mode[:-1]
-
-    @property
-    def _type(self):
-        return self.mode[-1]
 
     def seekable(self):
         return True
 
+    def _validate_seekable(self):
+        if not all([self.writable(), self.seekable()]):
+            raise OSError
+
     def tell(self):
+        self._validate_seekable()
         return self._buffer.tell()
 
     def seek(self, _offset, _whence=0):
+        self._validate_seekable()
         self._buffer.seek(_offset, _whence)
 
     def truncate(self, _size):
-        if not self.writable():
-            raise OSError()
+        self._validate_seekable()
         return self._buffer.truncate(_size)
 
     def write(self, _buffer):
         if not self.writable():
             raise OSError()
-        return self._write(_buffer)
+        return self._write_buf(_buffer)
 
-    def _write(self, _buffer):
+    def _write_buf(self, _buffer):
         return self._buffer.write(_buffer)
 
     def close(self):
         if not self._closed:
-            if self._writable:
+            if self.writable():
                 self.flush()
             self._closed = True
     
@@ -324,7 +304,6 @@ class SQLARFileWriter(io.RawIOBase):
         return self._closed
 
     def __enter__(self):
-        #return super().__enter__()
         self._closed = False
         return self
 
@@ -333,7 +312,7 @@ class SQLARFileWriter(io.RawIOBase):
         self.close()
 
     def flush(self):
-        if self._writable:
+        if self.writable():
             data = self._buffer.getbuffer()[self._flush_pos:].tobytes()
             sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=data, mode=self.mode)
             self._flush_pos = self.tell()
@@ -366,7 +345,7 @@ class SQLARFileWriter(io.RawIOBase):
         self._buffer.readinto(_buffer)
 
     def readable(self) -> bool:
-        return self._readable
+        return self.mode.reading
 
     def writable(self) -> bool:
-        return self._writable
+        return self.mode.writing
