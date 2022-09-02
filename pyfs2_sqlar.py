@@ -198,25 +198,30 @@ class SQLARFS(fsb.FS):
         if self._check_invalid(path):
             raise fse.InvalidCharsInPath(path)
         mode_obj = fsm.Mode(mode)
-        mode_obj.validate()
+        mode_obj.validate(_valid_chars=frozenset("rwxab+"))
         path = self._tr_path(path)
+        path_info = None
         try:
             path_info = self._get_sqlar_path_info(path)
-            if mode_obj.exclusive:
-                raise fse.FileExists(path)
-            if path_info.is_dir:
-                raise fse.FileExpected(path)
-            # Check to see if parent directories exist:
-            self._validate_intermediate_paths(path)
         except fse.ResourceNotFound:
             if mode_obj.reading:
                 raise
+        if path_info and mode_obj.exclusive:
+            raise fse.FileExists(path)
+        if path_info and path_info.is_dir:
+            raise fse.FileExpected(path)
+        # Check to see if parent directories exist:
+        self._validate_intermediate_paths(path)
         file_obj = SQLARFileWriter(self.file, path, mode)
         return file_obj
 
     def remove(self, path):
+        _orig_path = path
         path = self._tr_path(path)
-        info = self.getinfo(path)
+        try:
+            info = self.getinfo(path)
+        except fse.ResourceNotFound:
+            raise fse.ResourceNotFound(_orig_path) from None
         if info.is_dir:
             raise fse.FileExpected(path)
         sqlar.delete_file(self.file, path)
@@ -242,9 +247,8 @@ class SQLARFileWriter(io.RawIOBase):
         super().__init__()
         self._buffer = io.BytesIO()
         self._flush_pos = 0
-        self.mode = fsm.Mode(mode)
+        self._mode = fsm.Mode(mode)
         self._closed = False
-        self._touch = lambda: self._write_buf(b'')
         self.sqlite_archive = None
         if isinstance(archive_filename, SQLiteArchive):
             self.sqlite_archive = archive_filename
@@ -252,18 +256,24 @@ class SQLARFileWriter(io.RawIOBase):
             self.sqlite_archive = SQLiteArchive(archive_filename, mode='rwc')
         self.internal_filename_path = internal_filename_path
         self._init_buffer()
-        if self.mode.create:
-            # "touch" the file
-            self._touch()
+        if self._mode.create and not self._mode.appending:
+            # overwrite the file
+            self.seek(0, io.SEEK_SET)
+            self.truncate(0)
+            self.flush()
+            
+    @property
+    def mode(self):
+        return self._mode.to_platform_bin()
 
     def _init_buffer(self):
         # So we only have 1 trip to the database
         data = self.sqlite_archive.read(self.internal_filename_path)
         if data != None:
             self._buffer.write(data)
-            if not self.mode.appending:
+            if not self._mode.appending:
                 self._buffer.seek(0)
-        if self.mode.appending:
+        if self._mode.appending:
             self._buffer.seek(0, io.SEEK_END)
             self._flush_pos = self.tell()
 
@@ -271,7 +281,7 @@ class SQLARFileWriter(io.RawIOBase):
         return True
 
     def _validate_seekable(self):
-        if not all([self.writable(), self.seekable()]):
+        if not self.seekable():
             raise OSError
 
     def tell(self):
@@ -280,11 +290,19 @@ class SQLARFileWriter(io.RawIOBase):
 
     def seek(self, _offset, _whence=0):
         self._validate_seekable()
-        self._buffer.seek(_offset, _whence)
+        return self._buffer.seek(_offset, _whence)
 
     def truncate(self, _size):
         self._validate_seekable()
-        return self._buffer.truncate(_size)
+        new_file_size = self._buffer.truncate(_size)
+        old_file_size = len(self._buffer.getbuffer())
+        if new_file_size > old_file_size:
+            pos = self.tell()
+            self.seek(old_file_size)
+            self.write(b'\0' * (new_file_size - old_file_size))
+            self.seek(pos)
+            #self._buffer.getbuffer()[pos:new_file_size] = b'\0' * (new_file_size - pos + 1)
+        return new_file_size
 
     def write(self, _buffer):
         if not self.writable():
@@ -300,6 +318,7 @@ class SQLARFileWriter(io.RawIOBase):
                 self.flush()
             self._closed = True
     
+    @property
     def closed(self):
         return self._closed
 
@@ -314,7 +333,7 @@ class SQLARFileWriter(io.RawIOBase):
     def flush(self):
         if self.writable():
             data = self._buffer.getbuffer().tobytes()
-            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=data, mode=str(self.mode), cursor_pos=self.tell())
+            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=data, mode=str(self._mode), cursor_pos=self.tell())
             self._flush_pos = self.tell()
 
     def writelines(self, _lines):
@@ -342,10 +361,10 @@ class SQLARFileWriter(io.RawIOBase):
     def readinto(self, _buffer: bytearray):
         if not self.readable():
             raise OSError()
-        self._buffer.readinto(_buffer)
+        return self._buffer.readinto(_buffer)
 
     def readable(self) -> bool:
-        return self.mode.reading
+        return self._mode.reading
 
     def writable(self) -> bool:
-        return self.mode.writing
+        return self._mode.writing
