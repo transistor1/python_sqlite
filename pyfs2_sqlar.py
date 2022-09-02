@@ -69,7 +69,7 @@ class SQLARFS(fsb.FS):
         full_path = self._tr_path(path)
         while fsp.dirname(full_path) != '/':
             parent = fsp.dirname(full_path)
-            path_info = self._get_sqlar_path_info(path)
+            path_info = self._get_sqlar_path_info(parent)
             if not path_info.is_dir:
                 raise fse.ResourceNotFound(path)
             full_path = parent
@@ -313,8 +313,8 @@ class SQLARFileWriter(io.RawIOBase):
 
     def flush(self):
         if self.writable():
-            data = self._buffer.getbuffer()[self._flush_pos:].tobytes()
-            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=data, mode=self.mode)
+            data = self._buffer.getbuffer().tobytes()
+            sqlar.write(self.sqlite_archive, '', self.internal_filename_path, data=data, mode=str(self.mode), cursor_pos=self.tell())
             self._flush_pos = self.tell()
 
     def writelines(self, _lines):
