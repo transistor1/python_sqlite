@@ -363,7 +363,10 @@ class SQLiteArchive():
             ).fetchone()
         if row:
             size, data = row
-            return decompress_data(data, size)[start-1:end]
+            if self._compression != SQLAR_STORED:
+                return decompress_data(data, size)[start-1:end]
+            else:
+                return data
 
     def sql(self, query, *args):
         """Execute raw SQL statements against the database.
@@ -482,20 +485,23 @@ class SQLiteArchive():
         else:
             compressed_data = data
 
-        append_sql = f"""sz = {'sz + ' if mode == 'ab' else ''} :sz,
-                         data = {'cast(data || :data as blob)' if mode == 'ab'
+        # append_sql = f"""sz = {'sz + ' if mode == 'ab' else ''} :sz,
+        #                  data = {'cast(data || :data as blob)' if 'a' in mode
+        #                     else ':data'}"""
+        append_sql = f"""data = {'cast(data || :data as blob)' if 'a' in mode
                             else ':data'}"""
 
         with self._conn as c:
             cursor = c.cursor()
             sql = f"""
                 INSERT INTO sqlar(name, mode, mtime, sz, data)
-                VALUES (:name, :mode, :mtime, :sz, :data)
+                VALUES (:name, :mode, :mtime, length(:data), :data)
 
                 ON CONFLICT(name) DO UPDATE
                     SET name = :name,
                     mode = :mode,
                     mtime = :mtime,
+                    sz = length(data),
                     {append_sql}
                 """
             cursor.execute(
