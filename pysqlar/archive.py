@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS sqlar(
     mode INT, -- access permissions
     mtime INT, -- last modification time
     sz INT, -- original file size
-    data BLOB -- compressed content
+    data STRICT BLOB -- compressed content
 )"""
 
 _SQLAR_TABLE_INFO_EXPECTED_RESULT = [
@@ -38,7 +38,7 @@ _SQLAR_TABLE_INFO_EXPECTED_RESULT = [
     (1, "mode", "INT", 0, None, 0),
     (2, "mtime", "INT", 0, None, 0),
     (3, "sz", "INT", 0, None, 0),
-    (4, "data", "BLOB", 0, None, 0)
+    (4, "data", "STRICT BLOB", 0, None, 0)
 ]
 
 class SQLiteArchiveException(Exception):
@@ -495,13 +495,13 @@ class SQLiteArchive():
             cursor = c.cursor()
             sql = f"""
                 INSERT INTO sqlar(name, mode, mtime, sz, data)
-                VALUES (:name, :mode, :mtime, length(:data), :data)
+                VALUES (:name, :mode, :mtime, 0, :data)
 
                 ON CONFLICT(name) DO UPDATE
                     SET name = :name,
                     mode = :mode,
                     mtime = :mtime,
-                    sz = length(data),
+                    sz = 0,
                     {append_sql}
                 """
             cursor.execute(
@@ -510,10 +510,10 @@ class SQLiteArchive():
                     'name': str(Path(arcname).as_posix()),
                     'mode': unix_mode,
                     'mtime': mtime,
-                    'sz': len(data),
                     'data': compressed_data
                 }
             )
+            cursor.execute('UPDATE sqlar SET sz=coalesce(length(data),0)')
             c.commit()
             pass
 
