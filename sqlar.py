@@ -6,7 +6,7 @@ import math
 import os
 import re
 import sqlite3
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 from glob import glob
 from pathlib import Path
 
@@ -17,15 +17,16 @@ from traitlets import default
 
 
 class SQLARFileInfo:
-    def __init__(self, name, mode, mtime, sz, is_dir, is_sym) -> None:
+    def __init__(self, name, mode, mtime, sz, is_dir, is_sym, atime=None, ctime=None) -> None:
         self.name = name
         self.mode = mode
         self.mtime = mtime
-        #self.mtime = datetime.fromtimestamp(mtime)
         self.sz = sz
         self.is_dir = is_dir
         self.is_sym = is_sym
         self.display_format = r'{_type:5} {name} {mode:5} {mtime:19} {sz:>20} '
+        self.atime = atime
+        self.ctime = ctime
 
     @property
     def wid(self):
@@ -66,12 +67,20 @@ class SQLARFileInfo:
                 name=self._name, mode=str(self.mode), mtime=str(self.mtime),
                 sz=str(self.sz))
 
+def setinfo(arch, arch_filename, mode, mtime, sz, atime, ctime):
+    arg_fields = [arch_filename, mode, mtime, sz, atime, ctime]
+    db_fields = ['name', 'mode', 'mtime', 'sz', 'atime', 'ctime']
+    db_fields = OrderedDict(db_fields, arg_fields)
+    db_fields = {dbf: argf for argf, dbf in zip(arg_fields, db_fields) if argf}
+    arch.sql(f"INSERT INTO sqlar (" + ', '.join(db_fields.keys()) + ") VALUES (?, ?, ?, ?, ?, ?)", 
+                arch_filename, mode, mtime, sz, atime, ctime)
 
 def write(arch, filename, arch_filename, is_dir=False, data=None, mode='wb', cursor_pos=0):
     def _try_write(arch, filename, arch_filename, is_dir=False, data=None, mode=mode, cursor_pos=0):
         if is_dir:
-            arch.sql(f"INSERT INTO sqlar (name, mode, mtime, sz) VALUES (?, ?, ?, ?)", 
-                arch_filename, 0o777, int(datetime.utcnow().timestamp()), 0)
+            cur_time = int(datetime.utcnow().timestamp())
+            arch.sql(f"INSERT INTO sqlar (name, mode, mtime, sz, atime, ctime) VALUES (?, ?, ?, ?, ?, ?)", 
+                arch_filename, 0o777, cur_time, 0, cur_time, cur_time)
         elif data != None:
             arch.writestr(arch_filename, data, mode=mode)
         else:
@@ -100,7 +109,18 @@ def _make_archive(archive, files):
                     archive_filename = str(file)
                     if prefix:
                         archive_filename = npath[len(prefix.group(0)):]
-                    f_info = SQLARFileInfo(archive_filename, stat.st_mode, stat.st_mtime, stat.st_size, file.is_dir())
+                    info = {
+                        'name': archive_filename,
+                        'mode': stat.st_mode,
+                        'mtime': stat.st_mtime,
+                        'sz': stat.st_size,
+                        'is_dir': file.is_dir(),
+                        'is_sym': None,
+                        'atime': stat.st_atime,
+                        'ctime': stat.st_ctime
+                    }
+                    f_info = SQLARFileInfo(**info)
+                    #f_info = SQLARFileInfo(archive_filename, stat.st_mode, stat.st_mtime, stat.st_size, file.is_dir())
                     print(str(f_info))
                     write(new_arch, str(file), archive_filename, file.is_dir())
         finally:
@@ -150,7 +170,8 @@ def path_is_dir(archive, path):
     data = archive.sql("SELECT data FROM sqlar WHERE name=? AND data IS NULL", path)
     return len(data) > 0
 
-def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
+
+def _new_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
     """
     Create a SQLARInfo object from file details
     :param archive: A SQLiteArchive object (from pysqlar)
@@ -162,11 +183,11 @@ def get_sqlarinfo(archive: pysqlar.SQLiteArchive, *file) -> SQLARFileInfo:
     elif file[3] == 0:
         # Check if it's a directory
         is_dir = path_is_dir(archive, file[0])
-    sqlarinfo = SQLARFileInfo(*file, is_dir, is_sym)
+    sqlarinfo = SQLARFileInfo(*file)
     return sqlarinfo
 
 
-def find_files(archive, patterns, from_root=False):
+def find_files(archive: pysqlar.SQLiteArchive, patterns, from_root=False):
     if type(patterns) is tuple:
         patterns = list(patterns)
     if type(patterns) is not list:
@@ -177,22 +198,30 @@ def find_files(archive, patterns, from_root=False):
         for pattern in patterns:
             reobj = re.compile(('^' if from_root else '') + fnmatch.translate(str(pattern)))
             if reobj.match(file[0]):
-                yield get_sqlarinfo(archive, *file)
+                yield _new_sqlarinfo(archive, *file)
 
 
-def get_path_info(archive, path):
+def get_path_info(archive: pysqlar.SQLiteArchive, path):
     if len(path) == 0:
         return None
     elif path == '/':
-        return SQLARFileInfo('', 0o777, int(datetime.utcnow().timestamp()), 
-            0, True, False)
+        stat = os.stat(archive.filename)
+        info = {
+            'name': '',
+            'mode': stat.st_mode,
+            'mtime': stat.st_mtime,
+            'sz': stat.st_size,
+            'is_dir': True,
+            'is_sym': False,
+            'atime': stat.st_atime,
+            'ctime': stat.st_ctime
+        }
+        return SQLARFileInfo(**info)
     else:
-        # if path.startswith('/'):
-        #     path = path[1:]
         file = archive.getinfo(path)
         if file == None:
             return None
-        return get_sqlarinfo(archive, *file)
+        return _new_sqlarinfo(archive, *file)
 
 
 @click.command()

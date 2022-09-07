@@ -106,6 +106,28 @@ class SQLARFS(fsb.FS):
             raise fse.ResourceNotFound(path)
         return path_obj
 
+    def setinfo(self, path, info):
+        # Will throw ResourceNotFound if path doesn't exist
+        path = self._tr_path(path)
+        pathinfo = self.getinfo(path)
+        #sqlar_path_info = self._get_sqlar_path_info(path) 
+        
+        sqlar_to_fsinfo = {
+            "name": "name",
+            "mtime":"modified",
+            "sz":"size",
+            "atime":"accessed",
+            "ctime":"created"}
+        fsinfo_to_sqlar = {v:k for k,v in sqlar_to_fsinfo.items()}
+        fields = []
+        vals = []
+        for fileprop, propval in info.get('details').items():
+            dbprop = fsinfo_to_sqlar[fileprop]
+            fields.append(f"{dbprop} = ?")
+            vals.append(propval)
+        vals.append(path)
+        self.file.sql(f"UPDATE sqlar SET {','.join(fields)} WHERE name = ?", *vals)
+
     def getinfo(self, path, namespaces=None):
         path = self._tr_path(path)
         namespaces = namespaces or ()
@@ -121,9 +143,9 @@ class SQLARFS(fsb.FS):
                 "_write": ["accessed", "modified"],
                 "type": int(resource_type),
                 "size": path_obj.sz,
-                "accessed": 0,
+                "accessed": path_obj.atime,
                 "modified": path_obj.mtime,
-                "created": 0
+                "created": path_obj.ctime
             }
         return fsi.Info(info)
 
@@ -237,9 +259,6 @@ class SQLARFS(fsb.FS):
         if len(files) > 0:
             raise fse.DirectoryNotEmpty(path)
         sqlar.delete_file(self.file, path)
-
-    def setinfo(self, path, info):
-        pass    
 
 
 class SQLARFileWriter(io.RawIOBase):

@@ -1,5 +1,7 @@
 import logging
+from multiprocessing.util import is_exiting
 import os
+from select import select
 import sqlite3
 import sys
 import zlib
@@ -30,7 +32,9 @@ CREATE TABLE IF NOT EXISTS sqlar(
     mode INT, -- access permissions
     mtime INT, -- last modification time
     sz INT, -- original file size
-    data STRICT BLOB -- compressed content
+    data BLOB, -- compressed content
+    atime INT,
+    ctime INT
 )"""
 
 _SQLAR_TABLE_INFO_EXPECTED_RESULT = [
@@ -38,7 +42,12 @@ _SQLAR_TABLE_INFO_EXPECTED_RESULT = [
     (1, "mode", "INT", 0, None, 0),
     (2, "mtime", "INT", 0, None, 0),
     (3, "sz", "INT", 0, None, 0),
-    (4, "data", "STRICT BLOB", 0, None, 0)
+    (4, "data", "BLOB", 0, None, 0),
+]
+
+_SQLAR_TABLE_INFO_EXPANDED_EXPECTED_RESULT = [
+    (5, "atime", "INT", 0, None, 0),
+    (6, "ctime", "INT", 0, None, 0),
 ]
 
 class SQLiteArchiveException(Exception):
@@ -129,15 +138,18 @@ def _init_archive(filename, mode):
 
 def _sqlar_table_exists(conn):
     cur = conn.cursor()
-    row = cur.execute("PRAGMA table_info('sqlar')").fetchall()
-
-    if len(row) != len(_SQLAR_TABLE_INFO_EXPECTED_RESULT):
-        return False
-
-    for res, expected in zip(row, _SQLAR_TABLE_INFO_EXPECTED_RESULT):
-        if res != expected:
+    field_info = cur.execute("PRAGMA table_info('sqlar')").fetchall()
+    for field in _SQLAR_TABLE_INFO_EXPECTED_RESULT:
+        if field not in field_info:
             return False
+    return True
 
+def _is_expanded_sqlar(conn):
+    cur = conn.cursor()
+    field_info = cur.execute("PRAGMA table_info('sqlar')").fetchall()
+    for field in _SQLAR_TABLE_INFO_EXPANDED_EXPECTED_RESULT:
+        if field not in field_info:
+            return False
     return True
 
 
@@ -241,8 +253,10 @@ class SQLiteArchive():
         self._conn, self.mode = _init_archive(filename, mode)
         if not _sqlar_table_exists(self._conn):
             raise SQLiteArchiveException("{} is not a sqlite archive".format(self.filename))
+        self.is_expanded = _is_expanded_sqlar(self._conn)
         self._compression = compression
         self._compress_level = compress_level
+        self.statinfo = os.stat(self.filename)
 
     def close(self):
         """Close the database."""
@@ -258,24 +272,48 @@ class SQLiteArchive():
             Metadata for file *name* or `None` if there is no such file in the
             archive.
         """
-        with self._conn as c:
-            row = c.execute(
-                """
-                SELECT name, mode, mtime, sz FROM sqlar WHERE name = ?;
-                """,
-                (name,)
-            ).fetchone()
-        return row
+        _info = self.infolist(name)
+        try:
+            row = next(iter(_info))
+            return row
+        except StopIteration:
+            return None
 
-    def infolist(self):
+    def _fieldlist(self, calc=False):
+        fields = [
+            'name',
+            'mode',
+            'mtime',
+            'sz'
+        ]
+        if calc:
+            fields += ['case when sz == 0 and data is null then true else false end is_dir',
+                       'case when sz == -1 and data is not null then true else false end is_sym']
+        if self.is_expanded:
+            fields += [
+                'atime',
+                'ctime'
+            ]
+        return fields
+
+    def infolist(self, name=None):
         """Returns a list of metadata for all files in the archive."""
+
+        fields = self._fieldlist(calc=True)
+        select_list = ', '.join(fields)
+        sql = f"""
+                SELECT 
+                {select_list} 
+                FROM sqlar {'WHERE name = ?' if name != None else ''};
+        """
         with self._conn as c:
-            rows = c.execute(
-                """
-                SELECT name, mode, mtime, sz FROM sqlar;
-                """
-            ).fetchall()
-        return rows
+            if name == None:
+                name = []
+            else:
+                name = [name]
+            cursor = c.cursor()
+            row = cursor.execute(sql, name).fetchall()
+        return row
 
     def namelist(self):
         """Returns a list of all files in the archive."""
